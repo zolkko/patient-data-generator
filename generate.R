@@ -40,6 +40,14 @@ config.year <- 2012
 # Load data
 namcs.source <- read.dta("raw/namcs2012-stata.dta")
 
+# Can't include these files due to licensing issues.  You can find them at:
+# www.nlm.nih.gov/research/umls/mapping_projects/icd9cm_to_snomedct.html
+i9.snomed.1 <- read.csv("raw/ICD9CM_SNOMED_MAP_1TO1_201512.txt", sep = '\t')
+i9.snomed.m <- read.csv("raw/ICD9CM_SNOMED_MAP_1TOM_201512.txt", sep = '\t')
+
+# Can't include this due to licensing issues.  You can find it at:
+# www.nlm.nih.gov/research/umls/mapping_projects/snomedct_to_icd10cm.html
+
 ###############################################################################
 # Generate weighted sample
 
@@ -75,6 +83,7 @@ parse.dx <- function(ptidx, dx) {
                     "icd9" = tmp2))
 }
 
+# Start with ICD9, taken from NAMCS
 diagnosis <- data.frame("patientid" = integer(),
                         "icd9" = character())
 for(dv in c("DIAG1", "DIAG2", "DIAG3")) {
@@ -82,8 +91,42 @@ for(dv in c("DIAG1", "DIAG2", "DIAG3")) {
   diagnosis <- rbind(diagnosis,
                      parse.dx(idx, as.character(namcs[idx,dv])))
 }
+diagnosis$icd9 <- as.character(diagnosis$icd9)
 
 # @TODO: Add in chronic conditions
+
+# Add in SNOMED-CT
+## 1:1
+tmp <- merge(diagnosis, i9.snomed.1, by.x='icd9', by.y='ICD_CODE', all.x=T)
+diagnosis <- tmp[,c(2,1,9)]
+colnames(diagnosis) <- c('patientid', 'icd9', 'snomed')
+
+## 1:M
+## So, here's the thing: we'll just randomly pick one of the SNOMED codes based
+## on their core usage.  This isn't right, but the data will be about as good
+## as most EHRs.  Realistic is what we're going for, right?
+tmp <- diagnosis[which(is.na(diagnosis$snomed)),]
+tmp$id <- 1:nrow(tmp)
+
+tmp <- merge(tmp, i9.snomed.m, by.x='icd9', by.y='ICD_CODE', all.x=T)
+tmp <- tmp[order(tmp$id),c(4,1,2,11,14)]
+tmp$CORE_USAGE <- as.numeric(as.character(tmp$CORE_USAGE))
+tmp$CORE_USAGE[is.na(tmp$CORE_USAGE)] <- 0
+tmp$CORE_USAGE <- tmp$CORE_USAGE + mean(tmp$CORE_USAGE[which(tmp$CORE_USAGE > 0)])
+
+tmp.aggr <- aggregate(tmp$CORE_USAGE, by=list('id' = tmp$id), FUN=function(x){
+  sample(1:length(x), 1, prob=x)
+})
+
+tmp.pos <- aggregate(1:nrow(tmp), by=list('id' = tmp$id), FUN=min)
+tmp.ap <- merge(tmp.aggr, tmp.pos, by='id')
+tmp.ap$keepers <- tmp.ap$x.x + tmp.ap$x.y - 1
+tmp.keepers <- tmp[tmp.ap$keepers,c(3,2,4)]
+colnames(tmp.keepers) <- c('patientid', 'icd9', 'snomed')
+diagnosis <- rbind(diagnosis[which(!is.na(diagnosis$snomed)), ],
+                    tmp.keepers)
+
+# @TODO: Add in ICD-10
 
 ###############################################################################
 # Create prescription df
